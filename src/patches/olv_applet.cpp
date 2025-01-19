@@ -21,24 +21,36 @@
 #include "utils/logger.h"
 #include "utils/replace_mem.h"
 
-#include <wups.h>
+#include <vector>
 #include <optional>
 #include <coreinit/debug.h>
 #include <coreinit/filesystem.h>
 #include <nsysnet/nssl.h>
+#include <function_patcher/function_patching.h>
 
 #include "ca_pem.h" // generated at buildtime
 
-const char wave_original[] = {
-        0x68, 0x74, 0x74, 0x70, 0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x2E, 0x6E, 0x69, 0x6E, 0x74, 0x65, 0x6E, 0x64,
-        0x6F, 0x2E, 0x6E, 0x65, 0x74
+struct olv_allowlist {
+    char scheme[16];
+    char domain[128];
+    char path[128]; // unverified
+    unsigned char flags[5];
 };
-const char wave_new[] = {
-        0x68, 0x74, 0x74, 0x70, 0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x2E, 0x70, 0x72, 0x65, 0x74, 0x65, 0x6E, 0x64,
-        0x6F, 0x2E, 0x63, 0x63, 0x00
+
+constexpr struct olv_allowlist original_entry = {
+    .scheme = "https",
+    .domain = ".nintendo.net",
+    .path = "",
+    .flags = {1, 1, 1, 1, 1},
 };
+
+constexpr struct olv_allowlist new_entry = {
+    .scheme = "https",
+    .domain = "." NETWORK_BASEURL,
+    .path = "",
+    .flags = {1, 1, 1, 1, 1},
+};
+
 const unsigned char miiverse_green_highlight[] = {
         0x82, 0xff, 0x05, 0xff, 0x82, 0xff, 0x05, 0xff, 0x1d, 0xff, 0x04, 0xff, 0x1d, 0xff, 0x04, 0xff
 };
@@ -65,6 +77,7 @@ const replacement replacements[] = {
 };
 
 static std::optional<FSFileHandle> rootca_pem_handle{};
+std::vector<PatchedFunctionHandle> olv_patches;
 
 DECL_FUNCTION(int, FSOpenFile, FSClient *client, FSCmdBlock *block, char *path, const char *mode, uint32_t *handle,
               int error) {
@@ -85,7 +98,7 @@ DECL_FUNCTION(int, FSOpenFile, FSClient *client, FSCmdBlock *block, char *path, 
         auto olv_ok = setup_olv_libs();
         // Patch applet binary too
         if (olv_ok)
-            replace(0x10000000, 0x10000000, wave_original, sizeof(wave_original), wave_new, sizeof(wave_new));
+            replace(0x10000000, 0x10000000, (const char *)&original_entry, sizeof(original_entry), (const char *)&new_entry, sizeof(new_entry));
         // Check for root CA file and take note of its handle
     } else if (strcmp("vol/content/browser/rootca.pem", path) == 0) {
         int ret = real_FSOpenFile(client, block, path, mode, handle, error);
@@ -123,6 +136,25 @@ DECL_FUNCTION(FSStatus, FSCloseFile, FSClient *client, FSCmdBlock *block, FSFile
     return real_FSCloseFile(client, block, handle, errorMask);
 }
 
-WUPS_MUST_REPLACE_FOR_PROCESS(FSOpenFile, WUPS_LOADER_LIBRARY_COREINIT, FSOpenFile, WUPS_FP_TARGET_PROCESS_MIIVERSE);
-WUPS_MUST_REPLACE_FOR_PROCESS(FSReadFile, WUPS_LOADER_LIBRARY_COREINIT, FSReadFile, WUPS_FP_TARGET_PROCESS_MIIVERSE);
-WUPS_MUST_REPLACE_FOR_PROCESS(FSCloseFile, WUPS_LOADER_LIBRARY_COREINIT, FSCloseFile, WUPS_FP_TARGET_PROCESS_MIIVERSE);
+void patchOlvApplet() {
+    olv_patches.reserve(3);
+
+    auto add_patch = [](function_replacement_data_t repl, const char *name) {
+        PatchedFunctionHandle handle = 0;
+        if (FunctionPatcher_AddFunctionPatch(&repl, &handle, nullptr) != FUNCTION_PATCHER_RESULT_SUCCESS) {
+            DEBUG_FUNCTION_LINE("Inkay/OLV: Failed to patch %s!", name);
+        }
+        olv_patches.push_back(handle);
+    };
+
+    add_patch(REPLACE_FUNCTION_FOR_PROCESS(FSOpenFile, LIBRARY_COREINIT, FSOpenFile, FP_TARGET_PROCESS_MIIVERSE), "FSOpenFile");
+    add_patch(REPLACE_FUNCTION_FOR_PROCESS(FSReadFile, LIBRARY_COREINIT, FSReadFile, FP_TARGET_PROCESS_MIIVERSE), "FSReadFile");
+    add_patch(REPLACE_FUNCTION_FOR_PROCESS(FSCloseFile, LIBRARY_COREINIT, FSCloseFile, FP_TARGET_PROCESS_MIIVERSE), "FSCloseFile");
+}
+
+void unpatchOlvApplet() {
+    for (auto handle: olv_patches) {
+        FunctionPatcher_RemoveFunctionPatch(handle);
+    }
+    olv_patches.clear();
+}

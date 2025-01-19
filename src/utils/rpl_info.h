@@ -1,6 +1,5 @@
-/*  Copyright 2023 Pretendo Network contributors <pretendo.network>
-    Copyright 2023 Ash Logan <ash@heyquark.com>
-    Copyright 2019 Maschell
+/*  Copyright 2024 Pretendo Network contributors <pretendo.network>
+    Copyright 2024 Ash Logan <ash@heyquark.com>
 
     Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby
     granted, provided that the above copyright notice and this permission notice appear in all copies.
@@ -14,13 +13,16 @@
 
 #pragma once
 
-#include <cstdlib>
-#include "inkay_config.h"
+#include <optional>
+#include <string_view>
+#include <coreinit/dynload.h>
 
-constexpr char original_url[] = "discovery.olv.nintendo.net/v1/endpoint";
-constexpr char new_url[] =      "discovery.olv." NETWORK_BASEURL "/v1/endpoint";
+std::optional<OSDynLoad_NotifyData> search_for_rpl(std::string_view name);
 
-_Static_assert(sizeof(original_url) > sizeof(new_url),
-               "new_url too long! Must be less than 38chars.");
-
-bool setup_olv_libs();
+constexpr void *rpl_addr(OSDynLoad_NotifyData rpl, uint32_t cemu_addr) {
+    if (cemu_addr < 0x1000'0000) {
+        return (void *)(rpl.textAddr + cemu_addr - 0x0200'0000);
+    } else {
+        return (void *)(rpl.dataAddr + cemu_addr - 0x1000'0000);
+    }
+}

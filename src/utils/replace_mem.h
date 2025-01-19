@@ -27,3 +27,9 @@ struct replacement {
 };
 
 void replaceBulk(uint32_t start, uint32_t size, std::span<const replacement> replacements);
+
+template <typename U>
+    requires std::integral<U>
+bool replace_unsigned(U *addr, U original_value, U new_value);
+
+bool replace_instruction(uint32_t *inst, uint32_t original_value, uint32_t new_value);

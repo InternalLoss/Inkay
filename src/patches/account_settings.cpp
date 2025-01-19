@@ -21,8 +21,10 @@
 #include "olv_urls.h"
 #include "utils/logger.h"
 #include "utils/replace_mem.h"
+#include "inkay_config.h"
 
-#include <wups.h>
+#include <function_patcher/function_patching.h>
+#include <vector>
 #include <optional>
 #include <coreinit/debug.h>
 #include <coreinit/filesystem.h>
@@ -35,25 +37,40 @@
 #define ACCOUNT_SETTINGS_TID_U 0x000500101004B100
 #define ACCOUNT_SETTINGS_TID_E 0x000500101004B200
 
-const char whitelist_original[] = {
-        0x68, 0x74, 0x74, 0x70, 0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x61, 0x63, 0x63, 0x6F, 0x75, 0x6E, 0x74, 0x2E,
-        0x6E, 0x69, 0x6E, 0x74, 0x65, 0x6E, 0x64, 0x6F, 0x2E, 0x6E, 0x65, 0x74
+struct account_settings_allowlist {
+    char scheme[16];
+    char domain[128];
+    char path[128]; // unverified
+    uint32_t flags;
 };
 
-const char whitelist_new[] = {
-        0x68, 0x74, 0x74, 0x70, 0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x61, 0x63, 0x63, 0x6F, 0x75, 0x6E, 0x74, 0x2E,
-        0x70, 0x72, 0x65, 0x74, 0x65, 0x6E, 0x64, 0x6F, 0x2E, 0x63, 0x63, 0x00
+constexpr struct account_settings_allowlist original_entry = {
+    .scheme = "https",
+    .domain = "account.nintendo.net",
+    .path = "",
+    .flags = 0x01010101,
 };
 
-const char wave_original[] = "saccount.nintendo.net";
+constexpr struct account_settings_allowlist new_entry = {
+    .scheme = "https",
+    .domain = "account." NETWORK_BASEURL,
+    .path = "",
+    .flags = 0x01010101,
+};
+constexpr char wave_original[] = "saccount.nintendo.net";
 
-const char wave_new[] =      "saccount.pretendo.cc";
+constexpr char wave_new[] =      "saccount." NETWORK_BASEURL;
 
-bool isAccountSettingsTitle();
+static bool isAccountSettingsTitle() {
+    return (OSGetTitleID() != 0 && (
+        OSGetTitleID() == ACCOUNT_SETTINGS_TID_J ||
+        OSGetTitleID() == ACCOUNT_SETTINGS_TID_U ||
+        OSGetTitleID() == ACCOUNT_SETTINGS_TID_E
+        ));
+}
 
 static std::optional<FSFileHandle> rootca_pem_handle{};
+std::vector<PatchedFunctionHandle> account_patches;
 
 DECL_FUNCTION(int, FSOpenFile_accSettings, FSClient *client, FSCmdBlock *block, char *path, const char *mode, uint32_t *handle,
               int error) {
@@ -102,15 +119,25 @@ DECL_FUNCTION(FSStatus, FSCloseFile_accSettings, FSClient *client, FSCmdBlock *b
     return real_FSCloseFile_accSettings(client, block, handle, errorMask);
 }
 
-bool isAccountSettingsTitle() {
-    return (OSGetTitleID() != 0 && (
-        OSGetTitleID() == ACCOUNT_SETTINGS_TID_J ||
-        OSGetTitleID() == ACCOUNT_SETTINGS_TID_U ||
-        OSGetTitleID() == ACCOUNT_SETTINGS_TID_E
-        ));
+bool patchAccountSettings() {
+    account_patches.reserve(3);
+
+    auto add_patch = [](function_replacement_data_t repl, const char *name) {
+        PatchedFunctionHandle handle = 0;
+        if (FunctionPatcher_AddFunctionPatch(&repl, &handle, nullptr) != FUNCTION_PATCHER_RESULT_SUCCESS) {
+            DEBUG_FUNCTION_LINE("Inkay/Account: Failed to patch %s!", name);
+        }
+        account_patches.push_back(handle);
+    };
+
+    add_patch(REPLACE_FUNCTION_FOR_PROCESS(FSOpenFile_accSettings, LIBRARY_COREINIT, FSOpenFile, FP_TARGET_PROCESS_GAME), "FSOpenFile_accSettings");
+    add_patch(REPLACE_FUNCTION_FOR_PROCESS(FSReadFile_accSettings, LIBRARY_COREINIT, FSReadFile, FP_TARGET_PROCESS_GAME), "FSReadFile_accSettings");
+    add_patch(REPLACE_FUNCTION_FOR_PROCESS(FSCloseFile_accSettings, LIBRARY_COREINIT, FSCloseFile, FP_TARGET_PROCESS_GAME), "FSCloseFile_accSettings");
+        
+    return true;
 }
 
-bool patchAccountSettings() {
+bool hotpatchAccountSettings() {
     if(!isAccountSettingsTitle()) {
         return false;
     }
@@ -123,18 +150,21 @@ bool patchAccountSettings() {
     DEBUG_FUNCTION_LINE_VERBOSE("Inkay: hewwo account settings!\n");
 
     if (!replace(0x10000000, 0x10000000, wave_original, sizeof(wave_original), wave_new, sizeof(wave_new))) {
-        DEBUG_FUNCTION_LINE_VERBOSE("Inkay: We didn't find the url /)>~<(\\");
+        DEBUG_FUNCTION_LINE("Inkay: We didn't find the url /)>~<(\\");
         return false;
     }
 
-    if (!replace(0x10000000, 0x10000000, whitelist_original, sizeof(whitelist_original), whitelist_new, sizeof(whitelist_new))) {
-        DEBUG_FUNCTION_LINE_VERBOSE("Inkay: We didn't find the whitelist /)>~<(\\");
+    if (!replace(0x10000000, 0x10000000, (const char *)&original_entry, sizeof(original_entry), (const char *)&new_entry, sizeof(new_entry))) {
+        DEBUG_FUNCTION_LINE("Inkay: We didn't find the whitelist /)>~<(\\");
         return false;
     }
-        
+
     return true;
 }
 
-WUPS_MUST_REPLACE_FOR_PROCESS(FSOpenFile_accSettings, WUPS_LOADER_LIBRARY_COREINIT, FSOpenFile, WUPS_FP_TARGET_PROCESS_GAME);
-WUPS_MUST_REPLACE_FOR_PROCESS(FSReadFile_accSettings, WUPS_LOADER_LIBRARY_COREINIT, FSReadFile, WUPS_FP_TARGET_PROCESS_GAME);
-WUPS_MUST_REPLACE_FOR_PROCESS(FSCloseFile_accSettings, WUPS_LOADER_LIBRARY_COREINIT, FSCloseFile, WUPS_FP_TARGET_PROCESS_GAME);
+void unpatchAccountSettings() {
+    for (auto handle: account_patches) {
+        FunctionPatcher_RemoveFunctionPatch(handle);
+    }
+    account_patches.clear();
+}

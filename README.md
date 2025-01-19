@@ -1,6 +1,5 @@
-# DO NOT USE THIS FORK.
-
 # Inkay - Aroma patches for Pretendo
+## Please do not use this fork, as it contains my personal certificate for SSL capturing. You should use the [original repository](https://github.com/PretendoNetwork/Inkay) instead.
 
 [![Pretendo network logo](https://github.com/PretendoNetwork/website/raw/master/public/assets/images/opengraph/opengraph-image.png)](https://pretendo.network)
 
